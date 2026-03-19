@@ -4,10 +4,9 @@ import json
 from unittest.mock import MagicMock, patch
 
 import pytest
+from anthropic.types import TextBlock
 
 from veritas.verifier import _build_user_prompt, _parse_response, run_verification
-from veritas.state import VerificationResult
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -40,7 +39,7 @@ _VALID_RESPONSE = {
 
 
 def _make_message(text: str) -> MagicMock:
-    content_block = MagicMock()
+    content_block = MagicMock(spec=TextBlock)
     content_block.text = text
     msg = MagicMock()
     msg.content = [content_block]

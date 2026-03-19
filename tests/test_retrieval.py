@@ -1,15 +1,19 @@
 """Tests for veritas.retrieval — all network calls are mocked."""
 
-import pytest
-import httpx
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import httpx
+import pytest
 
 from veritas.retrieval import (
     AbstractFetchError,
     PaperNotFoundError,
+    SearchError,
     _fetch_one,
     fetch_abstracts,
     fetch_abstracts_sync,
+    search_papers,
+    search_papers_sync,
 )
 
 
@@ -149,3 +153,139 @@ def test_fetch_abstracts_sync_reads_env_api_key(monkeypatch: pytest.MonkeyPatch)
         mock_run.return_value = [{"paper_id": "p1", "title": None, "abstract": None}]
         fetch_abstracts_sync(["p1"])
     mock_run.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# search_papers (async)
+# ---------------------------------------------------------------------------
+
+
+def _make_search_response(
+    status_code: int, papers: list[dict] | None = None
+) -> MagicMock:
+    resp = MagicMock(spec=httpx.Response)
+    resp.status_code = status_code
+    if papers is not None:
+        resp.json.return_value = {"total": len(papers), "data": papers}
+    return resp
+
+
+@pytest.mark.asyncio
+async def test_search_papers_success() -> None:
+    s2_papers = [
+        {"paperId": "abc123", "title": "Great Study", "abstract": "Shows X."},
+        {"paperId": "def456", "title": "Another Study", "abstract": "Shows Y."},
+    ]
+    with patch("veritas.retrieval.httpx.AsyncClient") as mock_cls:
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+        mock_client.get = AsyncMock(return_value=_make_search_response(200, s2_papers))
+        mock_cls.return_value = mock_client
+
+        results = await search_papers("melatonin light", limit=2)
+
+    assert len(results) == 2
+    assert results[0]["paper_id"] == "abc123"
+    assert results[0]["title"] == "Great Study"
+    assert results[1]["paper_id"] == "def456"
+
+
+@pytest.mark.asyncio
+async def test_search_papers_filters_missing_paper_id() -> None:
+    s2_papers = [
+        {"paperId": "abc123", "title": "Good", "abstract": "A."},
+        {"paperId": None, "title": "No ID", "abstract": "B."},
+        {"title": "Also no ID", "abstract": "C."},
+    ]
+    with patch("veritas.retrieval.httpx.AsyncClient") as mock_cls:
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+        mock_client.get = AsyncMock(return_value=_make_search_response(200, s2_papers))
+        mock_cls.return_value = mock_client
+
+        results = await search_papers("test query")
+
+    assert len(results) == 1
+    assert results[0]["paper_id"] == "abc123"
+
+
+@pytest.mark.asyncio
+async def test_search_papers_empty_results() -> None:
+    with patch("veritas.retrieval.httpx.AsyncClient") as mock_cls:
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+        mock_client.get = AsyncMock(return_value=_make_search_response(200, []))
+        mock_cls.return_value = mock_client
+
+        results = await search_papers("obscure query")
+
+    assert results == []
+
+
+@pytest.mark.asyncio
+async def test_search_papers_non_200_raises_search_error() -> None:
+    with patch("veritas.retrieval.httpx.AsyncClient") as mock_cls:
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+        mock_client.get = AsyncMock(return_value=_make_search_response(429))
+        mock_cls.return_value = mock_client
+
+        with pytest.raises(SearchError):
+            await search_papers("test")
+
+
+@pytest.mark.asyncio
+async def test_search_papers_timeout_raises_search_error() -> None:
+    with patch("veritas.retrieval.httpx.AsyncClient") as mock_cls:
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+        mock_client.get = AsyncMock(side_effect=httpx.TimeoutException("timed out"))
+        mock_cls.return_value = mock_client
+
+        with pytest.raises(SearchError):
+            await search_papers("test")
+
+
+@pytest.mark.asyncio
+async def test_search_papers_network_error_raises_search_error() -> None:
+    with patch("veritas.retrieval.httpx.AsyncClient") as mock_cls:
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+        mock_client.get = AsyncMock(side_effect=httpx.ConnectError("refused"))
+        mock_cls.return_value = mock_client
+
+        with pytest.raises(SearchError):
+            await search_papers("test")
+
+
+@pytest.mark.asyncio
+async def test_search_papers_sets_api_key_header() -> None:
+    with patch("veritas.retrieval.httpx.AsyncClient") as mock_cls:
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+        mock_client.get = AsyncMock(return_value=_make_search_response(200, []))
+        mock_cls.return_value = mock_client
+
+        await search_papers("test", api_key="my-key")
+
+    _, kwargs = mock_client.get.call_args
+    assert kwargs["headers"]["x-api-key"] == "my-key"
+
+
+# ---------------------------------------------------------------------------
+# search_papers_sync
+# ---------------------------------------------------------------------------
+
+
+def test_search_papers_sync_success() -> None:
+    with patch("veritas.retrieval.asyncio.run") as mock_run:
+        mock_run.return_value = [{"paper_id": "abc", "title": "T", "abstract": "A"}]
+        result = search_papers_sync("some keywords")
+    assert result[0]["paper_id"] == "abc"

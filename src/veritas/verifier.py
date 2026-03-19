@@ -2,6 +2,7 @@ import json
 import os
 
 import anthropic
+from anthropic.types import TextBlock
 
 from veritas.state import PaperResult, VerificationResult
 
@@ -84,7 +85,8 @@ def run_verification(
             system=_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": user_prompt}],
         )
-        raw = message.content[0].text if message.content else ""
+        first = message.content[0] if message.content else None
+        raw = first.text if isinstance(first, TextBlock) else ""
         try:
             return _parse_response(raw, claim, papers)
         except (json.JSONDecodeError, KeyError, TypeError):
@@ -97,7 +99,7 @@ def run_verification(
                     reasoning="Failed to parse LLM response after 2 attempts.",
                     papers=[
                         PaperResult(
-                            paper_id=p["paper_id"],
+                            paper_id=str(p["paper_id"] or ""),
                             title=p.get("title"),
                             verdict="insufficient_evidence",
                             note="Parse error",
@@ -108,3 +110,29 @@ def run_verification(
 
     # Unreachable, but satisfies type checker
     raise RuntimeError("Unexpected exit from verification loop")
+
+
+_KEYWORD_SYSTEM = """\
+You are a search query expert. Extract 2-4 concise scientific keywords from a claim.
+Respond with ONLY a space-separated list of keywords — no punctuation, no explanation.
+"""
+
+
+def distill_keywords(
+    claim: str,
+    model: str | None = None,
+    api_key: str | None = None,
+) -> str:
+    """Use Claude to distil a claim into concise search keywords."""
+    client = anthropic.Anthropic(api_key=api_key or os.environ.get("ANTHROPIC_API_KEY"))
+    model = model or DEFAULT_MODEL
+
+    message = client.messages.create(
+        model=model,
+        max_tokens=50,
+        system=_KEYWORD_SYSTEM,
+        messages=[{"role": "user", "content": f"Claim: {claim}"}],
+    )
+    first = message.content[0] if message.content else None
+    raw = first.text.strip() if isinstance(first, TextBlock) else ""
+    return raw or claim
