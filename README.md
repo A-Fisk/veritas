@@ -59,6 +59,8 @@ veritas verify \
   --top-k 10
 ```
 
+**Note on paper order:** Papers are returned in Semantic Scholar's relevance-based ranking order. The first result is considered most relevant to your claim, with relevance decreasing down the list. See [Paper ranking methodology](#paper-ranking-methodology) for details.
+
 `--search` and `--paper-id` are mutually exclusive.
 
 ## Example
@@ -128,9 +130,70 @@ Exit code 0 means the verification ran successfully (including `not_supported` �
 **Search mode (`--search`):**
 
 1. **Keyword distillation** — Claude extracts 2–4 search keywords from the claim.
-2. **Paper search** — Veritas queries the Semantic Scholar search API with those keywords and retrieves the top-k results.
+2. **Paper search** — Veritas queries the Semantic Scholar search API with those keywords and retrieves the top-k results **ranked by relevance**.
 3. **LLM assessment** — Same as step 2 above.
 4. **Structured output** — Same as step 3 above.
+
+## Paper ranking methodology
+
+### How papers are ranked
+
+Veritas uses different ranking approaches depending on the mode:
+
+**Paper-ID mode (`--paper-id`):** No ranking is applied. Papers are processed in the order you provide them, maintaining your specified sequence for verification.
+
+**Search mode (`--search`):** Papers are ranked by **Semantic Scholar's relevance algorithm**, which considers multiple factors:
+
+- **Keyword relevance** — How well the paper's title, abstract, and metadata match your search terms
+- **Citation impact** — Papers with more citations from high-quality sources rank higher
+- **Recency bias** — More recent papers get a slight ranking boost
+- **Quality signals** — Semantic Scholar's machine learning models assess paper quality based on venue, author reputation, and content analysis
+
+### Current ranking limitations
+
+Veritas currently **does not** offer user customization of ranking criteria:
+
+- ❌ **No weight adjustment** — You cannot prioritize relevance over recency or vice versa
+- ❌ **No source filtering** — Cannot restrict to specific journals, years, or author institutions
+- ❌ **No custom scoring** — Cannot apply domain-specific ranking criteria
+- ❌ **No secondary sorting** — Papers are returned in Semantic Scholar's order without additional processing
+
+### Ranking customization opportunities
+
+Future versions could offer these ranking customization options:
+
+**Basic customization:**
+```bash
+# Hypothetical future syntax
+veritas verify --claim "..." --search \
+  --sort-by relevance|recency|citations \
+  --min-citations 50 \
+  --since 2020
+```
+
+**Advanced filtering:**
+```bash
+# Filter by venue quality, author institutions, or study type
+veritas verify --claim "..." --search \
+  --venues "Nature,Science,Cell" \
+  --exclude-preprints \
+  --study-types "RCT,meta-analysis"
+```
+
+**Custom scoring:**
+```python
+# Library interface with custom ranking
+from veritas import search_and_rank
+
+papers = search_and_rank(
+    claim="...",
+    top_k=20,  # Get more papers initially
+    ranker=lambda p: 0.7*p.relevance + 0.3*p.citation_count,
+    filters={"min_year": 2018, "has_abstract": True}
+)
+```
+
+**Implementation considerations:** Custom ranking would require either (1) fetching larger paper sets from Semantic Scholar then re-ranking locally, or (2) multiple API calls with different search parameters, both of which increase latency and API usage.
 
 ## Python library usage
 
