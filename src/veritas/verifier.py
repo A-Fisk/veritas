@@ -49,7 +49,12 @@ def _parse_response(
     claim: str,
     papers: list[dict[str, str | None]],
 ) -> VerificationResult:
-    data = json.loads(raw)
+    stripped = raw.strip()
+    if stripped.startswith("```"):
+        lines = stripped.splitlines()
+        # Drop first line (```json or ```) and last line (```)
+        stripped = "\n".join(lines[1:-1])
+    data = json.loads(stripped)
     return VerificationResult(
         claim=claim,
         verdict=data["verdict"],
