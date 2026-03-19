@@ -34,6 +34,33 @@ echo '{"claim": "...", "paper_ids": ["DOI:10.1056/NEJMoa1805819"]}' \
   | veritas verify --json-stdin
 ```
 
+## Search mode
+
+If you don't have specific paper IDs, use `--search` to let Veritas find relevant papers automatically. It extracts 2–4 keywords from your claim using Claude, queries Semantic Scholar, then verifies the top results.
+
+```bash
+veritas verify \
+  --claim "Aspirin reduces risk of cardiovascular events in primary prevention" \
+  --search
+```
+
+The keywords and paper count are printed to stderr so you can see what was searched:
+
+```
+Search keywords: 'aspirin primary prevention cardiovascular'  |  Papers found: 5
+```
+
+Use `--top-k` to control how many papers are retrieved (default 5, max 20):
+
+```bash
+veritas verify \
+  --claim "Aspirin reduces risk of cardiovascular events in primary prevention" \
+  --search \
+  --top-k 10
+```
+
+`--search` and `--paper-id` are mutually exclusive.
+
 ## Example
 
 **Claim:** "Aspirin reduces risk of cardiovascular events in primary prevention"
@@ -92,13 +119,24 @@ Exit code 0 means the verification ran successfully (including `not_supported` �
 
 ## How it works
 
+**Paper-ID mode (`--paper-id`):**
+
 1. **Abstract retrieval** — Veritas fetches the title and abstract for each paper ID from the [Semantic Scholar Graph API](https://api.semanticscholar.org/). No API key is needed for low-volume use.
 2. **LLM assessment** — The claim and all abstracts are sent to Claude in a single prompt. Claude returns a per-paper verdict and an overall verdict with confidence and reasoning.
 3. **Structured output** — The response is validated and printed as JSON to stdout.
 
+**Search mode (`--search`):**
+
+1. **Keyword distillation** — Claude extracts 2–4 search keywords from the claim.
+2. **Paper search** — Veritas queries the Semantic Scholar search API with those keywords and retrieves the top-k results.
+3. **LLM assessment** — Same as step 2 above.
+4. **Structured output** — Same as step 3 above.
+
 ## Python library usage
 
-Veritas can also be imported directly:
+Veritas can also be imported directly.
+
+**With explicit paper IDs:**
 
 ```python
 from veritas import verify
@@ -110,6 +148,20 @@ result = verify(
 print(result["verdict"])     # "not_supported"
 print(result["confidence"])  # 0.85
 print(result["reasoning"])   # "Both papers are large RCTs..."
+```
+
+**With automatic search:**
+
+```python
+from veritas import search_and_verify
+
+result, papers, keywords = search_and_verify(
+    claim="Aspirin reduces risk of cardiovascular events in primary prevention",
+    top_k=5,
+)
+print(keywords)          # "aspirin primary prevention cardiovascular"
+print(len(papers))       # 5
+print(result["verdict"]) # "not_supported"
 ```
 
 ## Configuration
