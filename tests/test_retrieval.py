@@ -61,8 +61,8 @@ async def test_fetch_one_rate_limit_retries_then_raises() -> None:
         with pytest.raises(AbstractFetchError) as exc_info:
             await _fetch_one(client, "2301.00001", api_key=None)
     assert exc_info.value.paper_id == "2301.00001"
-    assert "Rate limit exceeded" in str(exc_info.value)
-    # Should have slept 3 times (1s, 2s, 4s) before giving up
+    assert "after all retries" in str(exc_info.value)
+    # Should have slept 3 times (1s, 2s, 4s + jitter) before giving up
     assert mock_sleep.call_count == 3
 
 
@@ -77,15 +77,38 @@ async def test_fetch_one_rate_limit_succeeds_after_retry() -> None:
         mock_sleep.return_value = None
         result = await _fetch_one(client, "2301.00001", api_key=None)
     assert result["title"] == "Retried Paper"
-    mock_sleep.assert_called_once_with(1.0)
+    # sleep is called once with 1.0 + jitter (between 1.0 and 1.25)
+    assert mock_sleep.call_count == 1
+    sleep_arg = mock_sleep.call_args[0][0]
+    assert 1.0 <= sleep_arg <= 1.25 + 1e-9
 
 
 @pytest.mark.asyncio
-async def test_fetch_one_server_error_raises_abstract_fetch_error() -> None:
+async def test_fetch_one_server_error_retries_then_raises() -> None:
     client = AsyncMock(spec=httpx.AsyncClient)
+    # Always returns 500 — exhausts all retries
     client.get.return_value = _make_response(500)
-    with pytest.raises(AbstractFetchError):
-        await _fetch_one(client, "xyz", api_key=None)
+    with patch("veritas.retrieval.asyncio.sleep") as mock_sleep:
+        mock_sleep.return_value = None
+        with pytest.raises(AbstractFetchError) as exc_info:
+            await _fetch_one(client, "xyz", api_key=None)
+    assert exc_info.value.paper_id == "xyz"
+    assert "after all retries" in str(exc_info.value)
+    assert mock_sleep.call_count == 3
+
+
+@pytest.mark.asyncio
+async def test_fetch_one_server_error_succeeds_after_retry() -> None:
+    client = AsyncMock(spec=httpx.AsyncClient)
+    client.get.side_effect = [
+        _make_response(503),
+        _make_response(200, {"title": "Recovered", "abstract": "OK."}),
+    ]
+    with patch("veritas.retrieval.asyncio.sleep") as mock_sleep:
+        mock_sleep.return_value = None
+        result = await _fetch_one(client, "2301.00001", api_key=None)
+    assert result["title"] == "Recovered"
+    assert mock_sleep.call_count == 1
 
 
 @pytest.mark.asyncio
@@ -259,7 +282,7 @@ async def test_search_papers_rate_limit_retries_then_raises() -> None:
             with pytest.raises(SearchError) as exc_info:
                 await search_papers("test")
 
-    assert "Rate limit exceeded" in str(exc_info.value)
+    assert "after all retries" in str(exc_info.value)
     assert mock_sleep.call_count == 3
 
 
@@ -284,11 +307,13 @@ async def test_search_papers_rate_limit_succeeds_after_retry() -> None:
 
     assert len(results) == 1
     assert results[0]["paper_id"] == "abc123"
-    mock_sleep.assert_called_once_with(1.0)
+    assert mock_sleep.call_count == 1
+    sleep_arg = mock_sleep.call_args[0][0]
+    assert 1.0 <= sleep_arg <= 1.25 + 1e-9
 
 
 @pytest.mark.asyncio
-async def test_search_papers_non_200_raises_search_error() -> None:
+async def test_search_papers_server_error_retries_then_raises() -> None:
     with patch("veritas.retrieval.httpx.AsyncClient") as mock_cls:
         mock_client = AsyncMock()
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
@@ -296,8 +321,13 @@ async def test_search_papers_non_200_raises_search_error() -> None:
         mock_client.get = AsyncMock(return_value=_make_search_response(500))
         mock_cls.return_value = mock_client
 
-        with pytest.raises(SearchError):
-            await search_papers("test")
+        with patch("veritas.retrieval.asyncio.sleep") as mock_sleep:
+            mock_sleep.return_value = None
+            with pytest.raises(SearchError) as exc_info:
+                await search_papers("test")
+
+    assert "after all retries" in str(exc_info.value)
+    assert mock_sleep.call_count == 3
 
 
 @pytest.mark.asyncio

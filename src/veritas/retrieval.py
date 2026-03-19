@@ -1,5 +1,6 @@
 import asyncio
 import os
+import random
 
 import httpx
 
@@ -7,7 +8,8 @@ S2_BASE = "https://api.semanticscholar.org/graph/v1/paper"
 S2_SEARCH = "https://api.semanticscholar.org/graph/v1/paper/search"
 FIELDS = "title,abstract"
 DEFAULT_TIMEOUT = int(os.environ.get("VERITAS_TIMEOUT", "30"))
-_RETRY_DELAYS = (1.0, 2.0, 4.0)  # exponential backoff for 429 responses
+_RETRY_DELAYS = (1.0, 2.0, 4.0)  # exponential backoff for 429/5xx responses
+_JITTER_MAX = 0.25  # max jitter fraction added to each retry delay
 
 
 class PaperNotFoundError(Exception):
@@ -51,14 +53,14 @@ async def _fetch_one(
 
         if response.status_code == 404:
             raise PaperNotFoundError(paper_id)
-        if response.status_code == 429:
+        if response.status_code == 429 or response.status_code >= 500:
             delay = next(delays, None)
             if delay is None:
                 raise AbstractFetchError(
                     paper_id,
-                    f"Rate limit exceeded for paper {paper_id}. Please try again later.",
+                    f"Semantic Scholar returned {response.status_code} for paper {paper_id} after all retries.",
                 )
-            await asyncio.sleep(delay)
+            await asyncio.sleep(delay + random.uniform(0, delay * _JITTER_MAX))
             continue
         if response.status_code != 200:
             raise AbstractFetchError(
@@ -122,13 +124,13 @@ async def search_papers(
             except httpx.RequestError as e:
                 raise SearchError(f"Network error during search: {e}") from e
 
-            if response.status_code == 429:
+            if response.status_code == 429 or response.status_code >= 500:
                 delay = next(delays, None)
                 if delay is None:
                     raise SearchError(
-                        f"Rate limit exceeded for search query: {keywords!r}. Please try again later."
+                        f"Semantic Scholar returned {response.status_code} for search query: {keywords!r} after all retries."
                     )
-                await asyncio.sleep(delay)
+                await asyncio.sleep(delay + random.uniform(0, delay * _JITTER_MAX))
                 continue
             break
 
