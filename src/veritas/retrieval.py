@@ -7,6 +7,7 @@ S2_BASE = "https://api.semanticscholar.org/graph/v1/paper"
 S2_SEARCH = "https://api.semanticscholar.org/graph/v1/paper/search"
 FIELDS = "title,abstract"
 DEFAULT_TIMEOUT = int(os.environ.get("VERITAS_TIMEOUT", "30"))
+_RETRY_DELAYS = (1.0, 2.0, 4.0)  # exponential backoff for 429 responses
 
 
 class PaperNotFoundError(Exception):
@@ -34,32 +35,43 @@ async def _fetch_one(
     if api_key:
         headers["x-api-key"] = api_key
 
-    try:
-        response = await client.get(
-            f"{S2_BASE}/{paper_id}",
-            params={"fields": FIELDS},
-            headers=headers,
-            timeout=DEFAULT_TIMEOUT,
-        )
-    except httpx.TimeoutException as e:
-        raise AbstractFetchError(paper_id, f"Request timed out for {paper_id}") from e
-    except httpx.RequestError as e:
-        raise AbstractFetchError(paper_id, f"Network error for {paper_id}: {e}") from e
+    delays = iter(_RETRY_DELAYS)
+    while True:
+        try:
+            response = await client.get(
+                f"{S2_BASE}/{paper_id}",
+                params={"fields": FIELDS},
+                headers=headers,
+                timeout=DEFAULT_TIMEOUT,
+            )
+        except httpx.TimeoutException as e:
+            raise AbstractFetchError(paper_id, f"Request timed out for {paper_id}") from e
+        except httpx.RequestError as e:
+            raise AbstractFetchError(paper_id, f"Network error for {paper_id}: {e}") from e
 
-    if response.status_code == 404:
-        raise PaperNotFoundError(paper_id)
-    if response.status_code != 200:
-        raise AbstractFetchError(
-            paper_id,
-            f"Semantic Scholar returned {response.status_code} for {paper_id}",
-        )
+        if response.status_code == 404:
+            raise PaperNotFoundError(paper_id)
+        if response.status_code == 429:
+            delay = next(delays, None)
+            if delay is None:
+                raise AbstractFetchError(
+                    paper_id,
+                    f"Rate limit exceeded for paper {paper_id}. Please try again later.",
+                )
+            await asyncio.sleep(delay)
+            continue
+        if response.status_code != 200:
+            raise AbstractFetchError(
+                paper_id,
+                f"Semantic Scholar returned {response.status_code} for {paper_id}",
+            )
 
-    data = response.json()
-    return {
-        "paper_id": paper_id,
-        "title": data.get("title"),
-        "abstract": data.get("abstract"),
-    }
+        data = response.json()
+        return {
+            "paper_id": paper_id,
+            "title": data.get("title"),
+            "abstract": data.get("abstract"),
+        }
 
 
 async def fetch_abstracts(
@@ -95,18 +107,30 @@ async def search_papers(
     if api_key:
         headers["x-api-key"] = api_key
 
+    delays = iter(_RETRY_DELAYS)
     async with httpx.AsyncClient() as client:
-        try:
-            response = await client.get(
-                S2_SEARCH,
-                params={"query": keywords, "fields": FIELDS, "limit": limit},
-                headers=headers,
-                timeout=DEFAULT_TIMEOUT,
-            )
-        except httpx.TimeoutException as e:
-            raise SearchError(f"Search request timed out for query: {keywords!r}") from e
-        except httpx.RequestError as e:
-            raise SearchError(f"Network error during search: {e}") from e
+        while True:
+            try:
+                response = await client.get(
+                    S2_SEARCH,
+                    params={"query": keywords, "fields": FIELDS, "limit": limit},
+                    headers=headers,
+                    timeout=DEFAULT_TIMEOUT,
+                )
+            except httpx.TimeoutException as e:
+                raise SearchError(f"Search request timed out for query: {keywords!r}") from e
+            except httpx.RequestError as e:
+                raise SearchError(f"Network error during search: {e}") from e
+
+            if response.status_code == 429:
+                delay = next(delays, None)
+                if delay is None:
+                    raise SearchError(
+                        f"Rate limit exceeded for search query: {keywords!r}. Please try again later."
+                    )
+                await asyncio.sleep(delay)
+                continue
+            break
 
     if response.status_code != 200:
         raise SearchError(
