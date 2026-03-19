@@ -153,3 +153,66 @@ def test_cli_paper_id_mode_still_works_without_search() -> None:
             ["--claim", "Aspirin reduces cardiovascular risk", "--paper-id", "DOI:10.1000/test"],
         )
     assert result.exit_code == 0
+
+
+# ---------------------------------------------------------------------------
+# --verbose / -v flag
+# ---------------------------------------------------------------------------
+
+_VERBOSE_PAPERS = [
+    {"paper_id": "DOI:10.1000/test", "title": "Test Paper", "abstract": "This study shows no benefit."},
+]
+
+
+def test_cli_verbose_paper_id_mode() -> None:
+    with (
+        patch("veritas.cli.fetch_abstracts_sync", return_value=_VERBOSE_PAPERS),
+        patch("veritas.cli.run_verification", return_value=_MOCK_RESULT),
+    ):
+        result = runner.invoke(
+            app,
+            ["--claim", "Aspirin reduces cardiovascular risk", "--paper-id", "DOI:10.1000/test", "--verbose"],
+        )
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    assert data["verdict"] == "not_supported"
+    assert data["papers"][0]["abstract"] == "This study shows no benefit."
+
+
+def test_cli_verbose_short_flag() -> None:
+    with (
+        patch("veritas.cli.fetch_abstracts_sync", return_value=_VERBOSE_PAPERS),
+        patch("veritas.cli.run_verification", return_value=_MOCK_RESULT),
+    ):
+        result = runner.invoke(
+            app,
+            ["--claim", "Aspirin reduces cardiovascular risk", "--paper-id", "DOI:10.1000/test", "-v"],
+        )
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    assert "abstract" in data["papers"][0]
+
+
+def test_cli_verbose_search_mode() -> None:
+    with patch(
+        "veritas.cli.search_and_verify",
+        return_value=(_SEARCH_MOCK_RESULT, _SEARCH_PAPERS, "melatonin constant light"),
+    ):
+        result = runner.invoke(
+            app, ["--claim", "Constant light suppresses melatonin", "--search", "--verbose"]
+        )
+    assert result.exit_code == 0
+    data, _ = json.JSONDecoder().raw_decode(result.output)
+    assert data["verdict"] == "verified"
+    assert data["papers"][0]["abstract"] == "Constant light..."
+
+
+def test_cli_non_verbose_excludes_abstract() -> None:
+    with patch("veritas.cli.verify", return_value=_MOCK_RESULT):
+        result = runner.invoke(
+            app,
+            ["--claim", "Aspirin reduces cardiovascular risk", "--paper-id", "DOI:10.1000/test"],
+        )
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    assert "abstract" not in data["papers"][0]
